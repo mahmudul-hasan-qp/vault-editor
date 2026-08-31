@@ -105,6 +105,24 @@
   }
   .icon-btn:hover{color: var(--text); border-color: var(--text-faint);}
 
+  /* environment tabs */
+  .tab-row{
+    display:flex; align-items:center; gap:8px; padding: 10px 14px;
+    background: var(--panel-2); border-bottom: 1px solid var(--line);
+  }
+  .tab-list{display:flex; gap:6px; flex-wrap:wrap; flex:1;}
+  .tab-btn{
+    font-family: var(--mono); font-size: 12px; padding: 6px 12px;
+    border-radius: 6px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--text-dim); cursor:pointer; display:flex; align-items:center; gap:6px;
+  }
+  .tab-btn:hover{color: var(--text); border-color: var(--text-faint);}
+  .tab-btn.active{
+    background: rgba(217,164,65,0.1); border-color: var(--amber-dim); color: var(--amber);
+  }
+  .tab-btn .tab-count{font-size:10px; color: var(--text-faint);}
+  .tab-btn.active .tab-count{color: var(--amber-dim);}
+
   /* wrapper key row */
   .wrapper-row{
     display:flex; align-items:center; gap: 10px; padding: 12px 16px;
@@ -250,10 +268,15 @@
       <span class="count-pill" id="countPill">0 variables</span>
     </div>
 
-    <div class="wrapper-row">
-      <label>Vault key</label>
-      <input id="wrapperKeyInput" spellcheck="false" value=".env.se">
-      <span style="color:var(--text-faint); font-size:11.5px;">— stays as the outer JSON key, not shown as a variable</span>
+    <div class="tab-row">
+      <div id="tabList" class="tab-list"></div>
+      <button class="icon-btn" title="Add another environment" onclick="addEnvironment()">＋</button>
+    </div>
+    <div class="wrapper-row" id="renameRow" style="display:none;">
+      <label>Rename this key</label>
+      <input id="wrapperKeyInput" spellcheck="false" oninput="renameActiveEnv(this.value)">
+      <span style="color:var(--text-faint); font-size:11.5px;">— stays as a JSON key, not shown as a variable</span>
+      <button class="btn-danger-sm" style="margin-left:auto;" onclick="deleteEnvironment()">Delete this environment</button>
     </div>
 
     <div class="toolbar">
@@ -297,12 +320,18 @@
 </div>
 
 <script>
-let lines = [];      // ordered list of {id, type: 'kv'|'comment'|'blank', key, value, text}
-let wrapperKey = '.env.se';
+let environments = {};   // { keyName: [ {id, type:'kv'|'comment'|'blank', key, value, text}, ... ] }
+let envOrder = [];        // ordered list of key names, preserves paste order
+let activeEnv = null;     // currently selected key name
 let idCounter = 1;
 let revealAll = false;
 
 function nextId(){ return 'r' + (idCounter++); }
+
+// convenience getter for the rows array of whichever environment is active
+function currentLines(){
+  return environments[activeEnv] || [];
+}
 
 function parseEnvToLines(envStr){
   const rawLines = envStr.split('\n');
@@ -351,34 +380,113 @@ function loadJson(){
     errEl.style.display = 'inline';
     return;
   }
-  wrapperKey = keys[0];
-  const val = obj[wrapperKey];
-  if(typeof val !== 'string'){
-    errEl.textContent = 'Expected the value of "' + wrapperKey + '" to be a text blob, got ' + typeof val + '.';
+  const nonStringKey = keys.find(k => typeof obj[k] !== 'string');
+  if(nonStringKey){
+    errEl.textContent = 'Expected the value of "' + nonStringKey + '" to be a text blob, got ' + typeof obj[nonStringKey] + '.';
     errEl.style.display = 'inline';
     return;
   }
+
   idCounter = 1;
-  lines = parseEnvToLines(val);
-  document.getElementById('wrapperKeyInput').value = wrapperKey;
+  environments = {};
+  envOrder = [];
+  keys.forEach(k => {
+    environments[k] = parseEnvToLines(obj[k]);
+    envOrder.push(k);
+  });
+  activeEnv = envOrder[0];
+
   document.getElementById('editorPanel').style.display = 'block';
   document.getElementById('outputPanel').style.display = 'block';
+
+  renderTabs();
+  renderRows();
+  document.getElementById('editorPanel').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderTabs(){
+  const tabList = document.getElementById('tabList');
+  tabList.innerHTML = '';
+  envOrder.forEach(key => {
+    const count = environments[key].filter(l => l.type === 'kv').length;
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn' + (key === activeEnv ? ' active' : '');
+    btn.innerHTML = `${escapeAttr(key)} <span class="tab-count">${count}</span>`;
+    btn.onclick = () => switchEnv(key);
+    tabList.appendChild(btn);
+  });
+  updateStageBadge();
+}
+
+function switchEnv(key){
+  activeEnv = key;
+  document.getElementById('renameRow').style.display = 'flex';
+  document.getElementById('wrapperKeyInput').value = activeEnv;
+  document.getElementById('searchBox').value = '';
+  renderTabs();
+  renderRows();
+}
+
+function addEnvironment(){
+  let base = 'new-key';
+  let name = base, i = 1;
+  while(environments.hasOwnProperty(name)){ name = base + '-' + (i++); }
+  environments[name] = [];
+  envOrder.push(name);
+  switchEnv(name);
+  setTimeout(() => {
+    const el = document.getElementById('wrapperKeyInput');
+    el.focus();
+    el.select();
+  }, 0);
+}
+
+function renameActiveEnv(newName){
+  newName = newName.trim();
+  if(!newName || newName === activeEnv) return;
+  if(environments.hasOwnProperty(newName)){
+    return; // avoid silently clobbering another environment
+  }
+  const idx = envOrder.indexOf(activeEnv);
+  environments[newName] = environments[activeEnv];
+  delete environments[activeEnv];
+  envOrder[idx] = newName;
+  activeEnv = newName;
+  renderTabs();
+}
+
+function deleteEnvironment(){
+  if(envOrder.length <= 1){
+    alert("Can't delete the only remaining environment.");
+    return;
+  }
+  if(!confirm(`Delete "${activeEnv}" and all its fields? This can't be undone here.`)) return;
+  const idx = envOrder.indexOf(activeEnv);
+  delete environments[activeEnv];
+  envOrder.splice(idx, 1);
+  activeEnv = envOrder[Math.max(0, idx - 1)];
+  switchEnv(activeEnv);
+}
+
+function updateStageBadge(){
   const badge = document.getElementById('stageBadge');
+  const val = linesToEnv(currentLines());
   const dcMatch = val.match(/DC_NAME=([^\n]+)/);
   if(dcMatch){
     badge.textContent = dcMatch[1].trim().toUpperCase();
     badge.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
   }
-  renderRows();
-  document.getElementById('editorPanel').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 function addRow(type){
   const item = {id: nextId(), type};
   if(type === 'kv'){ item.key = ''; item.value = ''; }
   if(type === 'comment'){ item.text = ''; }
-  lines.push(item);
+  currentLines().push(item);
   renderRows();
+  renderTabs();
   // focus the new row's first input
   setTimeout(() => {
     const el = document.querySelector(`[data-row-id="${item.id}"] input`);
@@ -387,32 +495,35 @@ function addRow(type){
 }
 
 function deleteRow(id){
-  lines = lines.filter(l => l.id !== id);
+  environments[activeEnv] = currentLines().filter(l => l.id !== id);
   renderRows();
+  renderTabs();
 }
 
 function moveRow(id, dir){
-  const idx = lines.findIndex(l => l.id === id);
+  const list = currentLines();
+  const idx = list.findIndex(l => l.id === id);
   const swapWith = idx + dir;
-  if(swapWith < 0 || swapWith >= lines.length) return;
-  [lines[idx], lines[swapWith]] = [lines[swapWith], lines[idx]];
+  if(swapWith < 0 || swapWith >= list.length) return;
+  [list[idx], list[swapWith]] = [list[swapWith], list[idx]];
   renderRows();
 }
 
 function updateField(id, field, value){
-  const item = lines.find(l => l.id === id);
+  const item = currentLines().find(l => l.id === id);
   if(item) item[field] = value;
   if(field === 'key') checkDuplicates();
   document.getElementById('countPill').textContent = countVars() + ' variable' + (countVars()===1?'':'s');
+  if(field === 'value' || field === 'key') updateStageBadge();
 }
 
 function countVars(){
-  return lines.filter(l => l.type === 'kv').length;
+  return currentLines().filter(l => l.type === 'kv').length;
 }
 
 function checkDuplicates(){
   const keyCounts = {};
-  lines.filter(l=>l.type==='kv').forEach(l => {
+  currentLines().filter(l=>l.type==='kv').forEach(l => {
     const k = l.key.trim();
     if(!k) return;
     keyCounts[k] = (keyCounts[k]||0) + 1;
@@ -441,15 +552,16 @@ function toggleRevealOne(id){
 function renderRows(){
   const container = document.getElementById('rows');
   const search = document.getElementById('searchBox').value.trim().toLowerCase();
+  const list = currentLines();
   container.innerHTML = '';
 
-  if(lines.length === 0){
+  if(list.length === 0){
     container.innerHTML = '<div class="empty-state">No fields yet — click "+ Variable" to add one.</div>';
     document.getElementById('countPill').textContent = '0 variables';
     return;
   }
 
-  lines.forEach(item => {
+  list.forEach(item => {
     if(search && item.type === 'kv' && !item.key.toLowerCase().includes(search)) return;
     if(search && item.type !== 'kv') return; // hide comments/blanks while searching
 
@@ -539,12 +651,13 @@ function setupDragContainer(){
     const rect = targetRow.getBoundingClientRect();
     const before = (e.clientY - rect.top) < rect.height / 2;
 
-    const fromIdx = lines.findIndex(l => l.id === draggedId);
+    const list = currentLines();
+    const fromIdx = list.findIndex(l => l.id === draggedId);
     if(fromIdx === -1) return;
-    const [moved] = lines.splice(fromIdx, 1);
-    let toIdx = lines.findIndex(l => l.id === targetId);
-    if(toIdx === -1) toIdx = lines.length;
-    lines.splice(before ? toIdx : toIdx + 1, 0, moved);
+    const [moved] = list.splice(fromIdx, 1);
+    let toIdx = list.findIndex(l => l.id === targetId);
+    if(toIdx === -1) toIdx = list.length;
+    list.splice(before ? toIdx : toIdx + 1, 0, moved);
     renderRows();
   });
 }
@@ -558,9 +671,10 @@ function escapeAttr(str){
 }
 
 function generateOutput(){
-  wrapperKey = document.getElementById('wrapperKeyInput').value || '.env.se';
-  const envStr = linesToEnv(lines);
-  const obj = { [wrapperKey]: envStr };
+  const obj = {};
+  envOrder.forEach(key => {
+    obj[key] = linesToEnv(environments[key]);
+  });
   const json = JSON.stringify(obj, null, 2);
   document.getElementById('outputBox').value = json;
 }
@@ -586,10 +700,6 @@ function downloadOutput(){
   a.click();
   URL.revokeObjectURL(url);
 }
-
-document.getElementById('wrapperKeyInput').addEventListener('input', e => {
-  wrapperKey = e.target.value;
-});
 
 setupDragContainer();
 </script>
